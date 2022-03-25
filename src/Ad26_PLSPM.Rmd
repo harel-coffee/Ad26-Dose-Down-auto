@@ -1,0 +1,666 @@
+---
+title: "Ad26_PLSPM"
+author: "Daniel Zhu"
+date: "5/20/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(devtools)
+install_github("gastonstat/PLSPM")
+#install.packages("dplyr")
+library(plspm)
+#trace("plspm", edit=TRUE)
+
+
+# Set working directory:
+knitr::opts_knit$set(root.dir = '..') 
+```
+
+```{r, echo=FALSE}
+setwd("..")
+Ad26 <- read.csv(file.path(getwd(), "Processed_Data", "SystemsSerology.csv"), row.names=1)
+print(head(Ad26))
+```
+
+**FOR THE WILD-TYPE ANALYSIS**
+
+A few notes here about PLS-PM:
+Step 1 of the algorithm: computation of the weights to get the scores for the latent variables. Process involves initializing the outer weights (to express a latent variable as a weighted sum of its indicators), then iteratively 1) using the outer weights to compute the "external representation", 2) computing the inner weights (using the centroid scheme, factor scheme, or path scheme), 3) computing the internal representation using the result from 1) and 2), and 4) updating the outer weights (this is done by regressing each indicator on its latent score). Repeat until convergence. 
+
+Step 2: Path coefficients
+These relate different internal latent variables to one another. 
+
+Step 3: Loadings
+These are calculated as correlations between a latent variable and its indicators.
+
+For the Ad26 dosedown, the quantities of interest are the path coefficients (generally, this will likely be the case for any application of PLS-PM).
+
+
+```{r, echo=FALSE}
+# Function to perform PLS path modeling in R.
+# Arguments: the dataframe from which to find all variable information, path_mat: defines the inner model, is an nxn array of 0 or 1 (n=number of latent variables) specifying whether each LV is "connected" to each of the others), latent_varnames: labels to assign to the latent variables, indicator_blocks: can manually supply the indices of the dataframe that correspond to  ...: additional arguments that can be passed to the PLS-PM function. NOTE: please use list() to specify latent_varnames.  
+rplspm <- function(dataframe, path_mat, bootstrap=FALSE, latent_varnames=NULL, indicator_blocks=NULL, ...) {
+  set.seed(88)
+  if (is.null(indicator_blocks) && !is.null(latent_varnames)) {
+    # For reference, print the list of options for variable names:
+    writeLines(c("Options for variable names: ", colnames(dataframe)))
+    # Check if latent_varnames is a list, and if not, convert it to such:
+    if (!is.list(latent_varnames)) {latent_varnames = list(latent_varnames)}
+    # Dictionary-like to store information relevant to the outer model for each latent variable:
+    indicator_blocks <- vector(mode="list", length=length(latent_varnames)) # this may not be necessary, keep it here for now for organizational purposes.
+    names(indicator_blocks) <- latent_varnames
+    for (i in seq_along(latent_varnames)) {
+      latent_var = latent_varnames[i]
+      # Instantiate empty list to store indices of outer model variables in: 
+      outer_vars <- c()
+      # Ask the user for the dataframe labels corresponding to the variables that belong to each LV's outer model, while "flag" variable is True:
+      flag = TRUE
+      while (flag) {
+        var_label <- readline(prompt="Enter dataframe column label corresponding to this LV: ")
+        # Get the corresponding index:
+        var_index <- which(colnames(dataframe) == var_label)
+        # Append the index to the growing list of outer model variables:
+        outer_vars <- c(outer_vars, var_index)
+        # Ask if the user wants to keep entering variable names:
+        stop <- readline(prompt="Enter n to stop specifying variable names for this LV, anything else to continue: ")
+        if (casefold(stop) == "n") {flag=FALSE} 
+      }
+      indicator_blocks[[i]] <- outer_vars
+      # I'm not sure if this can just be used for foot_blocks? 
+    }
+  }
+  
+  else if (is.null(indicator_blocks) && is.null(latent_varnames)) {
+    stop("Both latent_varnames and indicator_blocks cannot be NULL.")
+  }
+  
+  else {
+    # Make sure indicator_blocks is a list:
+    if (!is.list(indicator_blocks)) {indicator_blocks = list(indicator_blocks)}
+  }
+  
+  
+  # Organize everything before running PLS-PM!
+  # Vector of modes (for serological data, everything should be reflective? e.g. each variable is a measurement that DESCRIBES the latent variable, not an event that causes it. Also not sure if this matters):
+  modes <- rep("A", length(latent_varnames))
+  
+  # I think I can just use outers_dict as the foot_blocks? Try out PLS-PM:
+  pls <- plspm(dataframe, path_mat, indicator_blocks, modes = modes, boot.val=bootstrap, br=100)
+  return(pls)
+}
+
+
+
+# Function to adjust for the number of variables going into each latent variable using an adjusted R^2 coefficient:
+# Input: a PLS-PM model. 
+rplspm_adjusted_rsquared <- function(pls) {
+  # Get the values of the inner model:
+  latent_vars <- pls$scores
+  print(latent_vars)
+}
+
+
+
+
+# Function to manually define the protection latent variable by equally weighting any "protection" features (for datasets that have NS and BAL viral load measurements, 50/50 weight the two of them and store the result in a new column to manually generate the protection latent variable):
+# Inputs: the dataframe, and the integer indices of the columns containing protection-relevant features (e.g. NS and BAL viral load).
+# Return/output: the modified dataframe.
+protection_LV <- function(dataframe, protection_feat_indices) {
+  library(dplyr)
+  vars <- dataframe[protection_feat_indices]
+  weight <- 1/length(protection_feat_indices)
+  dataframe['Protection Latent Variable'] <- apply(lapply(vars, "*", weight) %>% bind_cols, MARGIN=1, FUN=sum)
+  return(dataframe)
+}
+
+```
+
+
+
+
+Use the below cell to manually define a protection latent variable: 
+```{r}
+Ad26 <- protection_LV(dataframe = Ad26, protection_feat_indices = c(20:21))
+print(Ad26)
+```
+
+
+```{r}
+# Manually specifying the locations of each of our features of interest: 
+Functional_feats <- c(1:6); Antibody_feats <- c(7:12); Fc_feats <- c(13:17); Neut_feats <- 18; Tcell_IFN_feats <- 19; Protection_feats <- c(20:21)
+```
+
+
+Splitting the humoral latent variable into three separate latent variables: functional, antibody and Fc.
+```{r}
+setwd("..")
+Functional <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Functional, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+indicator_blocks <- list(Functional_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=TRUE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_functional_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+## Repeat the above block for the other groups of variables:
+```{r}
+setwd("..")
+Antibody <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Antibody, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+indicator_blocks <- list(Antibody_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=TRUE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_antibody_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+setwd("..")
+Fc <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Fc, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+indicator_blocks <- list(Fc_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=TRUE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_FC_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+setwd("..")
+Neut <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Neut, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+indicator_blocks <- list(Neut_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=TRUE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_neut_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+
+```{r}
+setwd("..")
+Tcell <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Tcell, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+indicator_blocks <- list(Tcell_IFN_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=TRUE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_Tcell_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+
+
+
+Applying the protection vs. viral burden reduction analysis to PLS-PM:
+```{r}
+# R factorization functions don't recognize odd characters like "/".
+Ad26$Outcome <- gsub("/", " or ", Ad26$Outcome)
+Ad26$OutcomeBinary <- as.numeric(factor(Ad26$Outcome, levels=c("Not protected or only protected BAL", "Protected"))) - 1
+# OutcomeBinary is col 24 (this is protection feats for the viral burden reduction).
+```
+
+
+```{r}
+# For viral burden reduction, subset the dataframe by samples that were not completely protected:
+# Protection feat. is now the binary outcome column- col 24.
+#Ad26 <- subset(Ad26, Outcome == "Not protected or only protected BAL")
+
+setwd("..")
+Functional <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Functional, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 24
+indicator_blocks <- list(Functional_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_functional_protection_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+# For viral burden reduction, subset the dataframe by samples that were not completely protected:
+# Protection feat. is now the binary outcome column- col 24.
+#Ad26 <- subset(Ad26, Outcome == "Not protected or only protected BAL")
+
+setwd("..")
+Antibody <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Antibody, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 24
+indicator_blocks <- list(Antibody_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_antibody_protection_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+# For viral burden reduction, subset the dataframe by samples that were not completely protected:
+# Protection feat. is now the binary outcome column- col 24.
+#Ad26 <- subset(Ad26, Outcome == "Not protected or only protected BAL")
+
+setwd("..")
+Fc <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Fc, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 24
+indicator_blocks <- list(Fc_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_FC_protection_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+# For viral burden reduction, subset the dataframe by samples that were not completely protected:
+# Protection feat. is now the binary outcome column- col 24.
+#Ad26 <- subset(Ad26, Outcome == "Not protected or only protected BAL")
+
+setwd("..")
+Neut <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Neut, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 24
+indicator_blocks <- list(Neut_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_neut_protection_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+# For viral burden reduction, subset the dataframe by samples that were not completely protected:
+# Protection feat. is now the binary outcome column- col 24.
+#Ad26 <- subset(Ad26, Outcome == "Not protected or only protected BAL")
+
+setwd("..")
+Tcell <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Tcell, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 24
+indicator_blocks <- list(Tcell_IFN_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_Tcell_protection_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+
+## VIRAL BURDEN REDUCTION ANALYSIS
+```{r}
+# For viral burden reduction, subset the dataframe by samples that were not completely protected:
+# Protection feat. is now back to AUC (column 23).
+Ad26 <- subset(Ad26, Outcome == "Not protected or only protected BAL")
+print(Ad26)
+```
+
+
+
+```{r}
+setwd("..")
+Functional <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Functional, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 23
+indicator_blocks <- list(Functional_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_functional_VBR_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+setwd("..")
+Antibody <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Antibody, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 23
+indicator_blocks <- list(Antibody_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_antibody_VBR_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+setwd("..")
+Fc <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Fc, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 23
+indicator_blocks <- list(Fc_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_FC_VBR_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+setwd("..")
+Neut <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Neut, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 23
+indicator_blocks <- list(Neut_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_neut_VBR_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
+```{r}
+setwd("..")
+Tcell <- c(0, 0)
+Protection <- c(1, 0)
+path_mat <- rbind(Tcell, Protection)
+# Add column names to reflect the fact that this array is pairwise: 
+colnames(path_mat) <- rownames(path_mat)
+print(path_mat)
+
+# Change protection feats:
+Protection_feats <- 23
+indicator_blocks <- list(Tcell_IFN_feats, Protection_feats)
+
+Ad26_plspm <- rplspm(dataframe=Ad26, path_mat=path_mat, bootstrap=FALSE, indicator_blocks=indicator_blocks)
+# Plot Ad26_plspm:
+plot(Ad26_plspm)
+# Print path coefficients:
+# Try to print the coefficient b/w the latent variable and the protection latent variable?
+#coefficient <- as.data.frame(Ad26_plspm$path_coefs)
+#print(coefficient["Protection", "Functional"])
+print(Ad26_plspm$path_coefs)
+# Cross loadings:
+print(Ad26_plspm$crossloadings)
+# Bootstrapping results:
+print(Ad26_plspm$boot)
+# Latent variable values:
+print(Ad26_plspm$scores)
+
+# Save latent variable values to .csv: if the .csv file already exists, append to it, if not, create it with write.csv:
+scores_filepath <- file.path(getwd(), "Analysis", "PLSPM_Tcell_VBR_temp.csv")
+write.csv(Ad26_plspm$scores, scores_filepath)
+```
+
