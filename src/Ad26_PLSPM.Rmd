@@ -8,7 +8,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 library(devtools)
-install_github("gastonstat/PLSPM")
+#install_github("gastonstat/PLSPM")
 #install.packages("dplyr")
 library(plspm)
 #trace("plspm", edit=TRUE)

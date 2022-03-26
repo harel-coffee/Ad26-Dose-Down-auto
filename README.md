@@ -5,7 +5,7 @@ Data and code used to draw conclusions for "Defining the determinants of protect
 
 Python
 ------
-python (3.8.5)
+python (3.8.5) \
 matplotlib (3.3.2) \
 numpy (1.19.2) \
 pandas (1.2.1) \
@@ -17,12 +17,12 @@ scikit-learn (0.24.2) \
  
 R
 -
-R (4.1.2)
-plspm (0.4.9)
-devtools (2.4.3)
+R (4.1.2) \
+plspm (0.4.9) \
+devtools (2.4.3) \
 
- 
-The sequence of terminal commands required to generate all data and figures: 
+
+The sequence of terminal commands required to generate all data and figures from code: 
 In terminal, navigate to the folder "Systems_Serology.py" was downloaded to (or stored post-download). Create a subdirectory to store initial data files; in the process of running code, "Processed_Data" subdirectory will additionally be created and automatically populated. 
 
 ## General Preprocessing (enter this command first)
