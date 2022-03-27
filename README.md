@@ -1,6 +1,29 @@
 # Ad26-Dose-Down
 Data and code used to draw conclusions for "Defining the determinants of protection against SARS-CoV2 infection and viral control in a dose down Ad26.CoV2.S vaccine study in non-human primates".
- 
+
+## Creating Python Environment
+Install Anaconda from the following link: https://docs.anaconda.com/anaconda/install/
+
+In terminal, 
+
+```
+conda create --name <environment_name>
+conda activate <environment name>
+```
+where <environment_name> is replaced by the desired environment name. 
+
+The required packages can also be downloaded using the following command. Python/pip should already be installed on the system if conda is working, but if not, the latest version of Python can be found and downloaded here: https://www.python.org/downloads/:
+```
+conda install <package_name>==<package_version>
+```
+See "Required Packages and Versions" for a list of names and versions. 
+
+
+## Downloading R
+Download R from this link: https://cran.r-project.org/bin/windows/base/, and optionally RStudio from: https://www.rstudio.com/products/rstudio/download/. Open the R application and use install.packages("package_name", version="package_version") to download requisite packages followed by library(package_name) to load packages. Then open the R files provided in this repository within the R application and run. 
+
+
+
 ## Required Packages and Versions
 
 Python
